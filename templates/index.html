@@ -54,6 +54,12 @@
 
   .controls-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; }
   .api-select { width:250px; }
+  @media (orientation: portrait) {
+  .aspect-ratio-wrapper {
+    /* This creates a 3:4 aspect ratio (taller than it is wide) */
+    padding-top: 133.33%; 
+  }
+}
 </style>
 </head>
 <body class="bg-light">
@@ -142,6 +148,7 @@ let lastCaptureTime = 0;
 let reqSent = 0, reqOk = 0;
 let running = false;
 let currentStream = null;
+let currentFacingMode = 'user';
 
 /* ---------------- attendance output ---------------- */
 let attendanceTimeout = null;
@@ -235,31 +242,48 @@ async function startCamera(deviceId = null) {
       currentStream = null;
     }
     statusDiv.innerHTML = '<div class="alert alert-info">Starting camera…</div>';
+
+    // Determine the desired aspect ratio based on screen orientation
+    const isPortrait = window.innerHeight > window.innerWidth;
+    const aspectRatio = isPortrait ? 9 / 16 : 16 / 9;
+
     const constraints = {
-      video: deviceId ? { deviceId: { exact: deviceId }, width: TARGET_WIDTH, height: TARGET_HEIGHT, frameRate: { ideal: TARGET_FPS } }
-                       : { facingMode: "user", width: TARGET_WIDTH, height: TARGET_HEIGHT, frameRate: { ideal: TARGET_FPS } },
+      video: {
+        // Use 'aspectRatio' for a natural view instead of fixed width/height
+        aspectRatio: { ideal: aspectRatio },
+        // You can suggest a width to guide the camera choice
+        width: { ideal: 1280 }, 
+        frameRate: { ideal: TARGET_FPS }
+      },
       audio: false
     };
+
+    if (deviceId) {
+        constraints.video.deviceId = { exact: deviceId };
+    } else {
+        constraints.video.facingMode = currentFacingMode;
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     currentStream = stream;
     video.srcObject = stream;
     await video.play();
+
+    // Dynamically mirror the video feed only for the front camera
+    video.style.transform = (currentFacingMode === 'user' && !deviceId) ? 'scaleX(-1)' : 'scaleX(1)';
+
     statusDiv.innerHTML = '<div class="alert alert-success">Camera started.</div>';
     startButton.style.display = 'none';
-
-    // set overlay pixel size (even though it's hidden)
-    overlay.width = TARGET_WIDTH;
-    overlay.height = TARGET_HEIGHT;
-
-    // create worker if needed
+    stopButton.style.display = 'inline-block';
+    // ... rest of the function is the same ...
     if (!worker) {
       worker = createEncoderWorker();
       worker.onmessage = onWorkerMessage;
       worker.onerror = (e) => console.error('Worker error', e);
     }
-
     running = true;
     requestAnimationFrame(loopRAF);
+
   } catch (err) {
     console.error('camera start failed', err);
     statusDiv.innerHTML = `<div class="alert alert-danger">Camera error: ${err.message || err}</div>`;
