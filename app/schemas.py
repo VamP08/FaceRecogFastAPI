@@ -5,6 +5,17 @@ from typing import List, Optional
 
 # --- API Response Models ---
 
+class EmployeeInfo(BaseModel):
+    id: str
+    name: str
+    member_code: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class EmployeeListResponse(BaseModel):
+    employees: List[EmployeeInfo]
+
 class StandardResponse(BaseModel):
     STATUS: int
     CODE: int
@@ -14,6 +25,7 @@ class StandardResponse(BaseModel):
 
 class FaceResult(BaseModel):
     name: str
+    member_code: Optional[str] = None
     box: List[int]
     score: float
 

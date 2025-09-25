@@ -4,7 +4,7 @@ import logging
 import time
 import numpy as np
 import cv2
-from fastapi import FastAPI, File, Form, UploadFile, Depends, HTTPException, Request
+from fastapi import FastAPI, File, Form, UploadFile, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,17 +38,13 @@ app.add_middleware(
 # --- Startup and Shutdown Events ---
 @app.on_event("startup")
 async def startup_event():
-    # This is a good place to create DB tables if they don't exist
     async with engine.begin() as conn:
-        # await conn.run_sync(models.Base.metadata.drop_all) # Use for dropping
         await conn.run_sync(models.Base.metadata.create_all)
-    
-    # Pre-load embeddings into the cache
     logging.info("Loading embeddings into cache on startup...")
     async for db in get_db():
-        names, embeddings, ids = await crud.load_all_embeddings(db)
-        embedding_cache.update(names, embeddings, ids)
-        break # Since get_db is a generator, we just need one iteration
+        names, embeddings, ids ,member_code= await crud.load_all_embeddings(db)
+        embedding_cache.update(names, embeddings, ids, member_code)
+        break
     logging.info("Startup complete.")
 
 # --- Helper for API Responses ---
@@ -71,27 +67,19 @@ def read_hi():
 async def upload_images(
     name: str = Form(...),
     id: str = Form(...),
+    member_code: str = Form(...),
     pictures: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db)
 ):
     if not all([name, id, pictures]):
         raise HTTPException(status_code=400, detail="Missing required parameters.")
 
-    existing_employee = await crud.get_employee_by_id(db, id)
-    if existing_employee:
-        return JSONResponse(
-            status_code=200,
-            content=make_response(0, 2, False, f"Employee with ID {id} already exists.")
-        )
-
     try:
-        # Step 1: Read all file contents asynchronously in the main thread
         files_data = []
         for file in pictures:
             contents = await file.read()
             files_data.append((file.filename, contents))
 
-        # Step 2: Run the synchronous, CPU-bound processing in a thread pool
         avg_embedding, rep_img_path = await run_in_threadpool(
             process_employee_images, employee_name=name, employee_id=id, files_data=files_data
         )
@@ -102,32 +90,40 @@ async def upload_images(
                 content=make_response(0, 2, False, "Failed to generate embeddings. No faces found or invalid images.")
             )
 
-        # Step 3: DB operation is async and runs in the main thread
-        await crud.create_employee(db, emp_id=id, name=name, embedding=avg_embedding, image_path=rep_img_path)
-
-        # Step 4: Update the live cache
-        embedding_cache.add_employee(name, avg_embedding, id)
-
+        existing_employee = await crud.get_employee_by_id(db, id)
+        
+        message = ""
+        if existing_employee:
+            await crud.update_employee(
+                db, emp_id=id, name=name, member_code=member_code, 
+                embedding=avg_embedding, image_path=rep_img_path
+            )
+            message = f"Employee {name} (ID: {id}) was successfully updated."
+        else:
+            await crud.create_employee(
+                db, emp_id=id, name=name, member_code=member_code, 
+                embedding=avg_embedding, image_path=rep_img_path
+            )
+            message = f"{name} is stored successfully."
+        
+        embedding_cache.update_or_add_employee(id, name, member_code, avg_embedding)
+        
         return JSONResponse(
             status_code=200,
-            content=make_response(1, 1, True, f"{name} is stored successfully.")
+            content=make_response(1, 1, True, message)
         )
+
     except Exception as e:
         logging.error(f"Error during upload: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to save images to database.")
 
-
 @app.post("/recognize", response_model=schemas.RecognitionResponse)
-async def recognize(file: UploadFile = File(...)):
-    start_total = time.time()
-    if not file:
-        return {"faces": []}
-
+async def recognize(background_tasks: BackgroundTasks, # Add this
+    file: UploadFile = File(...), 
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        # Read image bytes
         contents = await file.read()
-        
-        # Decode image in memory
         nparr = np.frombuffer(contents, np.uint8)
         image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -135,23 +131,65 @@ async def recognize(file: UploadFile = File(...)):
             logging.error("cv2.imdecode failed, image is None.")
             return {"faces": []}
 
-        # Get cache data
         cache_data = embedding_cache.get_all()
         if embedding_cache.is_empty():
             logging.warning("Recognition attempted but embedding cache is empty.")
             return {"faces": []}
             
-        # Run the CPU-bound detection and recognition in a thread pool
-        start_proc = time.time()
         recognized_faces = await run_in_threadpool(
             detect_and_recognize_faces, image_bgr=image_bgr, cache_data=cache_data
         )
-        proc_time = time.time() - start_proc
-        total_time = time.time() - start_total
-        
-        logging.info(f"Recognition result: {len(recognized_faces)} faces (proc={proc_time:.3f}s total={total_time:.3f}s)")
+
+        if recognized_faces:
+            best_face = max(
+                (f for f in recognized_faces if f.get("name") != "Unknown"), 
+                key=lambda f: f.get("score", 0), 
+                default=None
+            )
+            if best_face:
+                try:
+                    names, _, ids, member_codes = embedding_cache.get_all()
+                    idx = names.index(best_face["name"])
+                    emp_id_to_log = ids[idx]
+                    member_code_to_log = member_codes[idx]
+                    
+                    background_tasks.add_task(
+                        crud.create_recognition_log,
+                        db=db,
+                        emp_id=emp_id_to_log,
+                        name=best_face["name"],
+                        member_code=member_code_to_log
+                    )
+                except Exception as log_error:
+                    logging.error(f"Failed to save recognition log: {log_error}")
         
         return {"faces": recognized_faces}
     except Exception as e:
         logging.exception("Error processing recognition request: %s", e)
         return {"faces": []}
+
+@app.delete("/employees/{employee_id}", response_model=schemas.StandardResponse)
+async def delete_employee(employee_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Deletes an employee record from the database and the live cache.
+    """
+    deleted_employee = await crud.delete_employee_by_id(db, employee_id)
+
+    if not deleted_employee:
+        raise HTTPException(status_code=404, detail=f"Employee with ID '{employee_id}' not found.")
+
+    embedding_cache.remove_employee(employee_id)
+
+    message = f"Successfully deleted employee {deleted_employee.name} (ID: {employee_id})."
+    return JSONResponse(
+        status_code=200,
+        content=make_response(1, 1, True, message)
+    )
+
+@app.get("/employees", response_model=schemas.EmployeeListResponse)
+async def list_employees(db: AsyncSession = Depends(get_db)):
+    """
+    Returns a list of all registered employees with their ID, name, and member code.
+    """
+    employees_from_db = await crud.get_all_employees(db)
+    return {"employees": employees_from_db}

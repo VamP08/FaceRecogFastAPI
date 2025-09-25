@@ -53,14 +53,16 @@ def generate_embedding(face_roi: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 def detect_and_recognize_faces(image_bgr: np.ndarray, cache_data: Tuple) -> List[dict]:
-    """Detect all faces in an image and recognize them against the cached embeddings."""
+    """
+    Detect all faces in an image and recognize them against the cached embeddings.
+    """
     if image_bgr is None or image_bgr.size == 0:
         return []
 
-    names, stored_embeddings, _ = cache_data
+    names, stored_embeddings, _, member_codes = cache_data
     if not names or stored_embeddings.size == 0:
         return []
-
+    
     try:
         rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         detected_faces = detector.detect_faces(rgb_image)
@@ -71,7 +73,6 @@ def detect_and_recognize_faces(image_bgr: np.ndarray, cache_data: Tuple) -> List
     recognized_faces_list = []
     for face in detected_faces:
         x, y, w, h = face['box']
-        x, y = max(0, x), max(0, y)
         face_roi = image_bgr[y:y+h, x:x+w]
 
         if face_roi.size == 0:
@@ -81,17 +82,21 @@ def detect_and_recognize_faces(image_bgr: np.ndarray, cache_data: Tuple) -> List
         if embedding is None:
             continue
 
-        sims = np.dot(stored_embeddings, embedding.T)
+        normalized_embedding = normalize_embedding(embedding)
+        sims = np.dot(stored_embeddings, normalized_embedding.T)
         best_idx = int(np.argmax(sims))
         best_score = float(sims[best_idx])
         
         recognized_name = "Unknown"
+        member_code = None
         if best_score >= settings.RECOGNITION_THRESHOLD:
             recognized_name = names[best_idx]
+            member_code = member_codes[best_idx]
 
         recognized_faces_list.append({
             "name": recognized_name,
-            "box": [x, y, w, h],
+            "member_code": member_code,
+            "box": [int(coord) for coord in face['box']],
             "score": best_score
         })
     
@@ -101,10 +106,7 @@ def get_image_sharpness(image_bgr: np.ndarray) -> float:
     """Calculates the sharpness of an image using Laplacian variance."""
     if image_bgr is None or image_bgr.size == 0:
         return 0.0
-    # Convert to grayscale
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    # Compute the Laplacian of the gray image and then return the focus
-    # measure, which is simply the variance of the Laplacian
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 def process_employee_images(employee_name: str, employee_id: str, files_data: List[Tuple[str, bytes]]) -> Tuple[Optional[np.ndarray], Optional[str]]:
