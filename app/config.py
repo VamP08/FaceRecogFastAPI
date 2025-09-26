@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     DEBUG_SAVE_DIR: str = "debug_uploads"
     
     # --- Recognition Threshold ---
-    RECOGNITION_THRESHOLD: float = 0.35
+    RECOGNITION_THRESHOLD: float = 0.40
 
     class Config:
         # If you use a .env file, settings will be loaded from it

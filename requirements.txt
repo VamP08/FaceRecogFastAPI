@@ -10,3 +10,6 @@ mtcnn
 opencv-python-headless
 numpy
 psycopg2-binary # Still useful for initial schema setup if needed
+pydantic_settings
+tensorflow
+jinja2

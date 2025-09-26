@@ -193,3 +193,4 @@ async def list_employees(db: AsyncSession = Depends(get_db)):
     """
     employees_from_db = await crud.get_all_employees(db)
     return {"employees": employees_from_db}
+    

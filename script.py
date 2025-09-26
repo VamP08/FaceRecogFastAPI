@@ -2,98 +2,114 @@ import pandas as pd
 import requests
 import time
 import os
+from typing import List, Tuple
 
-# --- Configuration ---
+# --- ⚙️ Configuration ---
 # 1. The URL of your API endpoint for uploading
-API_URL = "http://127.0.0.1:8000/upload"
+API_URL = "https://facehrms.techvizor.in//upload"
 
-# 2. The path to the folder containing your images
-IMAGE_FOLDER_PATH = "images" 
+# 2. The path to the folder containing your images (e.g., "profile")
+IMAGE_FOLDER_PATH = "profile" 
 
-# 3. The name of your Excel file
-EXCEL_FILE = "usersolivenew.xlsx" 
+# 3. The name of your Excel or CSV file
+# IMPORTANT: Your file must have these exact column names: 
+# id, name, image, member_code, member_status
+DATA_FILE = "oliv-member-with-status.csv" # Change this to your filename
 
-# 4. The names of the columns in your Excel file
-NAME_COLUMN = "name"
-IMAGE_KEY_COLUMN = "image" # This column's value is used as the filename
-
-# 5. The file extension of your images (e.g., ".JPG", ".jpg", ".png")
-IMAGE_EXTENSION = ".JPG"
-
-# 6. Starting employee ID to generate for each person
-STARTING_ID = 1
+# 4. The file extension of your images (e.g., ".jpg", ".png")
+ALLOWED_EXTENSIONS = [".jpg", ".JPG", ".png", ".PNG"] # Make sure this matches your image files
 
 # --- Script Logic ---
 
-def upload_data():
+def upload_all_employees():
     """
-    Reads an Excel file and uploads corresponding local images to the API.
+    Reads a data file, filters for active members, and uploads their
+    corresponding images and data to the API.
     """
-    if not os.path.exists(EXCEL_FILE):
-        print(f"❌ Error: The Excel file '{EXCEL_FILE}' was not found.")
+    if not os.path.exists(DATA_FILE):
+        print(f"❌ Error: The data file '{DATA_FILE}' was not found.")
         return
     if not os.path.isdir(IMAGE_FOLDER_PATH):
         print(f"❌ Error: The image folder '{IMAGE_FOLDER_PATH}' was not found.")
         return
 
     try:
-        df = pd.read_excel(EXCEL_FILE)
-        print(f"✅ Successfully loaded {len(df)} records from '{EXCEL_FILE}'.")
+        # Read the data file, ensuring all columns are treated as strings
+        if DATA_FILE.endswith('.xlsx'):
+            df = pd.read_excel(DATA_FILE, dtype=str)
+        elif DATA_FILE.endswith('.csv'):
+            df = pd.read_csv(DATA_FILE, dtype=str)
+        else:
+            print(f"❌ Error: Unsupported file format. Please use .xlsx or .csv")
+            return
+        print(f"✅ Successfully loaded {len(df)} total records from '{DATA_FILE}'.")
     except Exception as e:
-        print(f"❌ Error reading Excel file: {e}")
+        print(f"❌ Error reading data file: {e}")
         return
 
-    for index, row in df.iterrows():
-        name = str(row[NAME_COLUMN])
-        image_key = str(row[IMAGE_KEY_COLUMN])
-        employee_id = STARTING_ID + index
+    # Filter for only active members
+    active_df = df[df['member_status'].str.upper() == 'ACTIVE'].copy()
+    print(f"Found {len(active_df)} active members to process.")
+
+    for index, row in active_df.iterrows():
+        # --- Read data from the required columns ---
+        employee_id = str(row["id"])
+        name = str(row["name"])
+        member_code = str(row["member_code"])
+        image_filename_base = str(row["image"])
         
-        print(f"\nProcessing record {index + 1}/{len(df)}: Name='{name}', Image Key='{image_key}'")
+        print(f"\nProcessing {name} (ID: {employee_id}, Member: {member_code})")
 
-        # --- Step 1: Construct the local file path and read the image ---
-        image_filename = image_key + IMAGE_EXTENSION
-        local_image_path = os.path.join(IMAGE_FOLDER_PATH, image_filename)
+        # --- Construct the image path and read the file ---
+        image_filename = None
+        local_image_path = None
+        for ext in ALLOWED_EXTENSIONS:
+            potential_filename = image_filename_base + ext
+            potential_path = os.path.join(IMAGE_FOLDER_PATH, potential_filename)
+            if os.path.exists(potential_path):
+                image_filename = potential_filename
+                local_image_path = potential_path
+                break # Stop searching once the file is found
 
+        if not local_image_path:
+            print(f"  ❌ WARNING: Image for '{image_filename_base}' not found with any extension. Skipping {name}.")
+            continue
+            
         try:
-            print(f"   Reading local file: {local_image_path}")
             with open(local_image_path, 'rb') as f:
                 image_content = f.read()
-            print("   ✅ Image file read successfully.")
-        except FileNotFoundError:
-            print(f"   ❌ FAILED: Image file not found at '{local_image_path}'")
-            continue # Skip to the next person
         except Exception as e:
-            print(f"   ❌ FAILED: Could not read image file. Error: {e}")
+            print(f"  ❌ WARNING: Could not read image file. Error: {e}")
             continue
 
-        # --- Step 2: Prepare the data for upload ---
+        # --- Prepare the data for the API request ---
         payload = {
+            'id': employee_id,
             'name': name,
-            'id': str(employee_id)
+            'member_code': member_code
         }
         
         files = {
-            # Use the actual filename for the upload
             'pictures': (image_filename, image_content, 'image/jpeg')
         }
 
-        # --- Step 3: Send the POST request to your API ---
+        # --- Send the POST request to the API ---
         try:
-            print(f"   Uploading data for {name} to the API...")
-            upload_response = requests.post(API_URL, data=payload, files=files, timeout=30)
+            print(f"  🚀 Uploading data for {name}...")
+            upload_response = requests.post(API_URL, data=payload, files=files, timeout=60)
             upload_response.raise_for_status()
             
-            print(f"   ✅ SUCCESS! Server response: {upload_response.json()}")
+            print(f"  ✅ SUCCESS! Server response: {upload_response.json().get('MESSAGE')}")
 
         except requests.exceptions.RequestException as e:
-            print(f"   ❌ FAILED to upload data for {name}. Error: {e}")
+            print(f"  ❌ FAILED to upload data for {name}. Error: {e}")
             if e.response is not None:
-                print(f"   Server details: {e.response.text}")
+                print(f"  Server details: {e.response.text}")
         
-        time.sleep(0.5) 
+        time.sleep(0.5) # A small delay to avoid overwhelming the server
 
     print("\n--- Script finished ---")
 
 
 if __name__ == "__main__":
-    upload_data()
+    upload_all_employees()

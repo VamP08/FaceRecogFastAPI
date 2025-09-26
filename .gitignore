@@ -2,3 +2,5 @@
 /images
 /model
 /uploads
+ __pycache__/
+*.pyc
