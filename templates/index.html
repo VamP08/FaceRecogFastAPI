@@ -49,9 +49,6 @@
   /* overlay hidden so no mirrored text/boxes on the video */
   #canvas-overlay { display:none; }
 
-  #debugPane { margin-top:12px; font-size:14px; }
-  #debugJson { white-space:pre-wrap; max-height:160px; overflow:auto; background:#fff; padding:8px; border-radius:6px; border:1px solid #ddd; }
-
   .controls-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; }
   .api-select { width:250px; }
   @media (orientation: portrait) {
@@ -89,25 +86,7 @@
 
     <div id="status" class="text-center mt-3"></div>
 
-    <div id="debugPane" class="mt-3">
-      <div class="row">
-        <div class="col-md-4">
-          <ul>
-            <li>Target size: <b id="targetSize">640x360</b></li>
-            <li>Target FPS: <b id="targetFps">12</b></li>
-            <li>Inflight: <b id="inflight">false</b></li>
-            <li>Requests sent: <b id="reqSent">0</b></li>
-            <li>Requests successful: <b id="reqOk">0</b></li>
-            <li>Last response time (ms): <b id="lastRespTime">-</b></li>
-            <li>Last faces count: <b id="lastFaceCount">0</b></li>
-          </ul>
-        </div>
-        <div class="col-md-8">
-          <div><b>Last response JSON:</b></div>
-          <div id="debugJson">— no response yet —</div>
-        </div>
-      </div>
-    </div>
+    <!-- Debug pane has been completely removed from here -->
 
   </div>
 </div>
@@ -127,25 +106,13 @@ const stopButton = document.getElementById('stopButton');
 const statusDiv = document.getElementById('status');
 const cameraSelect = document.getElementById('cameraSelect');
 
-const elTargetSize = document.getElementById('targetSize');
-const elTargetFps = document.getElementById('targetFps');
-const elInflight = document.getElementById('inflight');
-const elReqSent = document.getElementById('reqSent');
-const elReqOk = document.getElementById('reqOk');
-const elLastRespTime = document.getElementById('lastRespTime');
-const elLastFaceCount = document.getElementById('lastFaceCount');
-const elDebugJson = document.getElementById('debugJson');
-
-elTargetSize.textContent = `${TARGET_WIDTH}x${TARGET_HEIGHT}`;
-elTargetFps.textContent = TARGET_FPS;
-
+// Removed all debug element references
 const API_URL = "http://127.0.0.1:8000/recognize";
 
 /* ---------------- state ---------------- */
 let worker;
 let inflight = false;
 let lastCaptureTime = 0;
-let reqSent = 0, reqOk = 0;
 let running = false;
 let currentStream = null;
 let currentFacingMode = 'user';
@@ -275,7 +242,6 @@ async function startCamera(deviceId = null) {
     statusDiv.innerHTML = '<div class="alert alert-success">Camera started.</div>';
     startButton.style.display = 'none';
     stopButton.style.display = 'inline-block';
-    // ... rest of the function is the same ...
     if (!worker) {
       worker = createEncoderWorker();
       worker.onmessage = onWorkerMessage;
@@ -315,11 +281,11 @@ async function captureFrame() {
   if (!video || video.readyState < 2) return; // not enough data
   try {
     const bitmap = await createImageBitmap(video, { resizeWidth: TARGET_WIDTH, resizeHeight: TARGET_HEIGHT });
-    inflight = true; updateInflightUI();
+    inflight = true;
     worker.postMessage({ bitmap, meta: { width: TARGET_WIDTH, height: TARGET_HEIGHT, quality: JPEG_QUALITY } }, [bitmap]);
   } catch (err) {
     console.error('createImageBitmap failed', err);
-    inflight = false; updateInflightUI();
+    inflight = false;
   }
 }
 
@@ -327,34 +293,34 @@ async function captureFrame() {
 async function onWorkerMessage(ev) {
   if (ev.data && ev.data.error) {
     console.error('Worker encoding error:', ev.data.error);
-    inflight = false; updateInflightUI();
+    inflight = false;
     return;
   }
   const blob = ev.data && ev.data.blob;
-  if (!blob) { inflight = false; updateInflightUI(); return; }
+  if (!blob) { inflight = false; return; }
 
-  reqSent++; elReqSent.textContent = reqSent;
   const fd = new FormData(); fd.append('file', blob, 'frame.jpg');
 
-  const start = performance.now();
   let res;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
     res = await fetch(API_URL, { method: 'POST', body: fd, signal: controller.signal });
-    clearTimeout(timeout);
+    clearTimeout(timeout); 
   } catch (err) {
-    console.error('Upload failed:', err);
-    inflight = false; updateInflightUI();
+    // Handle the AbortError specifically
+    if (err.name === 'AbortError') {
+      console.log('Request was safely aborted'); 
+    } else {
+      console.error('Upload failed:', err); 
+    }
+    inflight = false;
     return;
   }
 
-  const elapsed = performance.now() - start;
-  elLastRespTime.textContent = Math.round(elapsed);
-
   if (!res.ok) {
     console.error('Server returned non-OK', res.status, await res.text());
-    inflight = false; updateInflightUI();
+    inflight = false;
     return;
   }
 
@@ -362,13 +328,9 @@ async function onWorkerMessage(ev) {
   try { json = await res.json(); }
   catch (err) {
     console.error('Failed to parse JSON response', err);
-    inflight = false; updateInflightUI();
+    inflight = false;
     return;
   }
-
-  // update debug JSON
-  elDebugJson.textContent = JSON.stringify(json, null, 2);
-  reqOk++; elReqOk.textContent = reqOk;
 
   // handle recognition results (prefer legacy CODE/DATA if present)
   if (json && json.CODE === 1 && json.DATA && json.DATA.name) {
@@ -387,21 +349,12 @@ async function onWorkerMessage(ev) {
         }
     }
 
-  // update last faces count (for debug)
-  elLastFaceCount.textContent = (json.faces && json.faces.length) ? json.faces.length : 0;
-
-  inflight = false; updateInflightUI();
-}
-
-/* ---------------- UI helpers ---------------- */
-function updateInflightUI() {
-  elInflight.textContent = inflight ? 'true' : 'false';
+  inflight = false;
 }
 
 /* ---------------- test curl helper ---------------- */
 document.getElementById('testCurlBtn').addEventListener('click', async () => {
-  const current = (apiPreset.value === 'custom' && apiCustom.value) ? apiCustom.value : apiPreset.value;
-  const sampleCmd = `curl -X POST -F "file=@test.jpg" "${current}"`;
+  const sampleCmd = `curl -X POST -F "file=@test.jpg" "${API_URL}"`;
   alert('Run this in your terminal where you have test.jpg:\n\n' + sampleCmd);
 });
 
