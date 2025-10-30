@@ -86,6 +86,23 @@ async def get_all_employees(db: AsyncSession) -> List[models.Employee]:
     result = await db.execute(select(models.Employee))
     return result.scalars().all()
 
+# async def create_recognition_log(
+#     db: AsyncSession, 
+#     emp_id: str, 
+#     name: str, 
+#     member_code: str
+# ):
+#     """Creates a new entry in the recognition_log table."""
+#     db_log = models.RecognitionLog(
+#         employee_id=emp_id,
+#         name=name,
+#         member_code=member_code
+#     )
+#     db.add(db_log)
+#     await db.commit()
+#     return db_log
+
+
 async def create_recognition_log(
     db: AsyncSession, 
     emp_id: str, 
@@ -100,4 +117,36 @@ async def create_recognition_log(
     )
     db.add(db_log)
     await db.commit()
+    await db.refresh(db_log)  # ✅ ensures ID and timestamps are loaded
     return db_log
+    
+    
+    
+    
+########### Attendance log #############
+
+async def get_recognitions_grouped_by_date(db: AsyncSession):
+    result = await db.execute(
+        select(
+            models.RecognitionLog.employee_id,
+            models.RecognitionLog.name,
+            models.RecognitionLog.member_code,
+            models.RecognitionLog.recognized_at
+        ).order_by(models.RecognitionLog.recognized_at.desc())
+    )
+    rows = result.fetchall()
+
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for employee_id, name, member_code, recognized_at in rows:
+        if not recognized_at:
+            continue
+        date_str = recognized_at.strftime("%Y-%m-%d")
+        time_str = recognized_at.strftime("%H:%M:%S")
+        grouped[date_str].append({
+            "employee_id": employee_id,
+            "name": name,
+            "member_code": member_code,
+            "time": time_str
+        })
+    return dict(sorted(grouped.items(), reverse=True))

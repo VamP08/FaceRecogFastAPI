@@ -128,6 +128,22 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+function speakName(name) {
+  if (!('speechSynthesis' in window)) {
+    console.warn("Speech Synthesis not supported in this browser.");
+    return;
+  }
+
+  const msg = new SpeechSynthesisUtterance(name);
+  msg.lang = 'en-US';
+  msg.pitch = 1;
+  msg.rate = 1;
+  msg.volume = 1;
+
+  // Stop any previous announcements to avoid overlap
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(msg);
+}
 function showAttendanceBelow(name, memberCode, opts = {}) {
     const when = new Date();
     const hh = String(when.getHours()).padStart(2, '0');
@@ -149,6 +165,9 @@ function showAttendanceBelow(name, memberCode, opts = {}) {
     `;
     if (attendanceTimeout) clearTimeout(attendanceTimeout);
     attendanceTimeout = setTimeout(() => { container.innerHTML = ''; }, opts.duration || 8000);
+    if (name) {
+        speakName(name);
+    }
 }
 
 /* ---------------- worker creation ---------------- */

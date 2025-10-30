@@ -35,6 +35,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
 # --- Startup and Shutdown Events ---
 @app.on_event("startup")
 async def startup_event():
@@ -58,6 +60,11 @@ def make_response(status, code, flag, message, data=None):
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+    
+    
+@app.get("/attendance", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("recognitions.html", {"request": request})
 
 @app.get("/hi")
 def read_hi():
@@ -117,6 +124,10 @@ async def upload_images(
         logging.error(f"Error during upload: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to save images to database.")
 
+
+recent_recognitions = {}
+RECOGNITION_COOLDOWN = 60  # seconds
+
 @app.post("/recognize", response_model=schemas.RecognitionResponse)
 async def recognize(background_tasks: BackgroundTasks, # Add this
     file: UploadFile = File(...), 
@@ -153,13 +164,47 @@ async def recognize(background_tasks: BackgroundTasks, # Add this
                     emp_id_to_log = ids[idx]
                     member_code_to_log = member_codes[idx]
                     
-                    background_tasks.add_task(
-                        crud.create_recognition_log,
-                        db=db,
-                        emp_id=emp_id_to_log,
-                        name=best_face["name"],
-                        member_code=member_code_to_log
-                    )
+                    # background_tasks.add_task(
+                    #     crud.create_recognition_log,
+                    #     db=db,
+                    #     emp_id=emp_id_to_log,
+                    #     name=best_face["name"],
+                    #     member_code=member_code_to_log
+                    # )
+                    
+                    # await crud.create_recognition_log(
+                    # db=db,
+                    # emp_id=emp_id_to_log,
+                    # name=best_face["name"],
+                    # member_code=member_code_to_log
+                    # )
+                    
+                    # --- Cooldown logic: avoid multiple inserts for same person ---
+                    now = time.time()
+                    last_time = recent_recognitions.get(emp_id_to_log, 0)
+                    
+                    if now - last_time > RECOGNITION_COOLDOWN:
+                        # Mark it *before* insert to block concurrent duplicates
+                        recent_recognitions[emp_id_to_log] = now  
+                    
+                        try:
+                            await crud.create_recognition_log(
+                                db=db,
+                                emp_id=emp_id_to_log,
+                                name=best_face["name"],
+                                member_code=member_code_to_log
+                            )
+                            logging.info(f"✅ Recognition logged for {best_face['name']}")
+                        except Exception as log_error:
+                            # Roll back the timestamp if DB insert fails
+                            recent_recognitions.pop(emp_id_to_log, None)
+                            logging.error(f"Failed to save recognition log: {log_error}")
+                    else:
+                        logging.info(
+                            f"⚠️ Skipped duplicate recognition for {best_face['name']} (within {RECOGNITION_COOLDOWN}s)"
+                        )
+
+
                 except Exception as log_error:
                     logging.error(f"Failed to save recognition log: {log_error}")
         
@@ -194,3 +239,40 @@ async def list_employees(db: AsyncSession = Depends(get_db)):
     employees_from_db = await crud.get_all_employees(db)
     return {"employees": employees_from_db}
     
+    
+    
+
+###### Attendance log APIs ######
+
+from fastapi import FastAPI, Request, Depends, HTTPException, Body
+# ------------------------------------------------
+# Route: POST API for date-wise recognition logs
+# ------------------------------------------------
+@app.post("/recognitions/datewise")
+async def get_recognitions_datewise_post(
+    data: dict = Body(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetch recognition logs grouped by date (POST method).
+    Example body: {"date": "2025-10-30"}
+    """
+    try:
+        date = data.get("date")
+        grouped_data = await crud.get_recognitions_grouped_by_date(db)
+
+        # Filter by specific date if provided
+        if date:
+            grouped_data = {date: grouped_data.get(date, [])}
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": True,
+                "message": "Recognition logs fetched successfully.",
+                "data": grouped_data
+            }
+        )
+    except Exception as e:
+        logging.error(f"Error fetching recognitions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch recognition logs.")
