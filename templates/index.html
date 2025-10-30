@@ -136,14 +136,30 @@ function speakName(name) {
 
   const msg = new SpeechSynthesisUtterance(name);
   msg.lang = 'en-US';
-  msg.pitch = 1;
-  msg.rate = 1;
+  msg.rate = 0.9;
+  msg.pitch = 1.1;
   msg.volume = 1;
 
-  // Stop any previous announcements to avoid overlap
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(msg);
+  const setVoice = () => {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) {
+      window.speechSynthesis.onvoiceschanged = setVoice;
+      return;
+    }
+
+    // Preferred voices in order of quality
+    msg.voice =
+      voices.find(v => v.name === "Google US English") ||
+      voices.find(v => v.lang === "en-US") ||
+      voices[0];
+
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(msg);
+  };
+
+  setVoice();
 }
+
 function showAttendanceBelow(name, memberCode, opts = {}) {
     const when = new Date();
     const hh = String(when.getHours()).padStart(2, '0');
@@ -166,7 +182,7 @@ function showAttendanceBelow(name, memberCode, opts = {}) {
     if (attendanceTimeout) clearTimeout(attendanceTimeout);
     attendanceTimeout = setTimeout(() => { container.innerHTML = ''; }, opts.duration || 8000);
     if (name) {
-        speakName(name);
+        speakName("Welcome"+name);
     }
 }
 
